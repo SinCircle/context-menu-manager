@@ -1,16 +1,23 @@
 """多分类树视图 - 主窗口左侧核心组件。
 
-四种分类模式（由工具栏下拉切换）：
+五种分类模式（由工具栏下拉切换）：
   * "target" 按目标位置（默认）：根节点=场景（文件/文件夹/背景/驱动器/
-    文件类型展开各扩展名），下挂菜单项；级联子菜单用 children 递归
-    展开为 父 -> 子。最能体现从属关系。
+    文件类型展开各扩展名/新建/发送到/打开方式/WinX），下挂菜单项；
+    级联子菜单用 children 递归展开为 父 -> 子。最能体现从属关系。
+    新场景（NEW/SENDTO/OPENWITH/WINX）即使 list_entries 暂返回空也显示分组。
   * "scope"  按作用域：分"用户级（可编辑）"/"系统级（只读）"两棵子树。
   * "kind"   按项目类型：自定义命令 / Shell 扩展 / 级联子菜单。
   * "flat"   扁平列表：全部条目（含递归子项）按字母排序，搜索框实时过滤。
+  * "app"    按应用分类：调 app_info.group_by_app，根节点=应用分组。
+    "合并相似项"开关：开时按 MergedItem 渲染（代表项+计数+targets），
+    关时按 AppGroup.entries 逐项渲染。app_info 为 stub 时降级为单一"全部"分组。
 
-节点显示：图标占位 + 显示名 + 徽章（用户/系统/只读）+ 命令摘要（截断）。
-对外方法：refresh() / get_selected() / set_classification(mode) /
-         set_entries(entries) / set_search_filter(text)。
+显示选项（由工具栏复选框控制）：隐藏已屏蔽项、隐藏系统项。
+屏蔽项加 [屏蔽] 前缀 + 灰色文字标签。
+
+对外方法：set_entries / set_classification / set_search_filter /
+         set_merge_similar / set_hide_blocked / set_hide_system /
+         get_selected / refresh。
 """
 from __future__ import annotations
 
@@ -18,6 +25,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
 
+from .. import elevation
 from ..model import EntryKind, MenuEntry, Scope, TargetContext
 
 
@@ -38,9 +46,10 @@ CLASSIFICATIONS: list[tuple[str, str]] = [
     ("scope", "按作用域"),
     ("kind", "按项目类型"),
     ("flat", "扁平列表"),
+    ("app", "按应用分类"),
 ]
 
-# 目标场景的稳定展示顺序
+# 目标场景的稳定展示顺序（含新场景）
 _TARGET_ORDER: list[TargetContext] = [
     TargetContext.FILES,
     TargetContext.DIRECTORY,
@@ -48,7 +57,19 @@ _TARGET_ORDER: list[TargetContext] = [
     TargetContext.DRIVE,
     TargetContext.ALLFILESYSTEMOBJECTS,
     TargetContext.FILETYPE,
+    TargetContext.NEW,
+    TargetContext.SENDTO,
+    TargetContext.OPENWITH,
+    TargetContext.WINX,
 ]
+
+# 新场景：即使 list_entries 暂返回空也显示分组根节点
+_NEW_SCENES = frozenset({
+    TargetContext.NEW,
+    TargetContext.SENDTO,
+    TargetContext.OPENWITH,
+    TargetContext.WINX,
+})
 
 
 class TreeView(ttk.Frame):
@@ -58,14 +79,19 @@ class TreeView(ttk.Frame):
         self,
         master: tk.Misc,
         on_select: Optional[Callable[[Optional[MenuEntry]], None]] = None,
+        app_info=None,
         *args,
         **kwargs,
     ) -> None:
         super().__init__(master, *args, **kwargs)
         self._on_select = on_select
+        self._app_info = app_info
         self._entries: list[MenuEntry] = []
         self._mode: str = "target"
         self._filter: str = ""
+        self._merge_similar: bool = False
+        self._hide_blocked: bool = False
+        self._hide_system: bool = False
         # tree item id -> MenuEntry（仅叶子/可选中节点登记）
         self._id_to_entry: dict[str, MenuEntry] = {}
         self._build_ui()
@@ -87,6 +113,9 @@ class TreeView(ttk.Frame):
         self.tree.column("#0", width=280, anchor="w")
         self.tree.column("badge", width=80, anchor="center")
         self.tree.column("summary", width=220, anchor="w")
+
+        # 屏蔽项灰色文字标签
+        self.tree.tag_configure("blocked", foreground="#888888")
 
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
@@ -122,6 +151,22 @@ class TreeView(ttk.Frame):
         self._filter = (text or "").strip()
         self._rebuild()
 
+    def set_merge_similar(self, merge: bool) -> None:
+        """设置"合并相似项"开关（仅 app 模式生效）。"""
+        self._merge_similar = bool(merge)
+        if self._mode == "app":
+            self._rebuild()
+
+    def set_hide_blocked(self, hide: bool) -> None:
+        """设置"隐藏已屏蔽项"过滤。"""
+        self._hide_blocked = bool(hide)
+        self._rebuild()
+
+    def set_hide_system(self, hide: bool) -> None:
+        """设置"隐藏系统项"过滤。"""
+        self._hide_system = bool(hide)
+        self._rebuild()
+
     def get_selected(self) -> Optional[MenuEntry]:
         """返回当前选中节点对应的 MenuEntry，未选中或仅选中分组节点返回 None。"""
         sel = self.tree.selection()
@@ -149,6 +194,8 @@ class TreeView(ttk.Frame):
             self._build_by_scope()
         elif self._mode == "kind":
             self._build_by_kind()
+        elif self._mode == "app":
+            self._build_by_app()
         else:
             self._build_flat()
 
@@ -163,7 +210,12 @@ class TreeView(ttk.Frame):
             if t is TargetContext.FILETYPE:
                 continue
             entries = by_target.get(t, [])
-            if not entries:
+            is_new_scene = t in _NEW_SCENES
+            # 计算可见条目（考虑搜索+显示选项过滤）
+            visible = [e for e in entries
+                       if self._entry_or_descendant_matches(e)]
+            # 新场景即使为空也显示分组根节点；其余场景无可见项则跳过
+            if not visible and not is_new_scene:
                 continue
             root_id = self.tree.insert(
                 "", "end",
@@ -171,22 +223,24 @@ class TreeView(ttk.Frame):
                 values=("", ""),
                 open=True,
             )
-            for entry in entries:
-                if self._entry_or_descendant_matches(entry):
-                    self._insert_entry(root_id, entry)
+            for entry in visible:
+                self._insert_entry(root_id, entry)
 
         # FILETYPE 展开各扩展名
         ft_entries = by_target.get(TargetContext.FILETYPE, [])
         for ext, group in _group_by_ext(ft_entries):
+            visible = [e for e in group
+                       if self._entry_or_descendant_matches(e)]
+            if not visible:
+                continue
             root_id = self.tree.insert(
                 "", "end",
                 text=f"\U0001F4C4 文件类型 {ext}",  # 📄
                 values=("", ""),
                 open=True,
             )
-            for entry in group:
-                if self._entry_or_descendant_matches(entry):
-                    self._insert_entry(root_id, entry)
+            for entry in visible:
+                self._insert_entry(root_id, entry)
 
     # 2. 按作用域 ───────────────────────────────────────────────
     def _build_by_scope(self) -> None:
@@ -209,16 +263,18 @@ class TreeView(ttk.Frame):
     # 3. 按项目类型 ─────────────────────────────────────────────
     def _build_by_kind(self) -> None:
         for k in (EntryKind.COMMAND, EntryKind.CASCADE, EntryKind.SHELLEX):
+            matching = [e for e in self._entries
+                        if e.kind is k
+                        and self._entry_or_descendant_matches(e)]
+            if not matching:
+                continue
             root_id = self.tree.insert(
                 "", "end",
                 text=f"{KIND_ICON.get(k, '•')} {k.label}",
                 values=("", ""), open=True,
             )
-            for entry in self._entries:
-                if entry.kind is not k:
-                    continue
-                if self._entry_or_descendant_matches(entry):
-                    self._insert_entry(root_id, entry)
+            for entry in matching:
+                self._insert_entry(root_id, entry)
 
     # 4. 扁平列表 ───────────────────────────────────────────────
     def _build_flat(self) -> None:
@@ -230,16 +286,108 @@ class TreeView(ttk.Frame):
             if self._matches_leaf(entry):
                 self._insert_entry("", entry, recurse=False)
 
+    # 5. 按应用分类 ─────────────────────────────────────────────
+    def _build_by_app(self) -> None:
+        if self._app_info is None:
+            # 降级：单一"全部"分组
+            self._render_degraded_app()
+            return
+        try:
+            groups = self._app_info.group_by_app(
+                self._entries, merge_similar=self._merge_similar
+            )
+        except Exception:
+            # 后端异常 -> 降级为单一分组
+            self._render_degraded_app()
+            return
+
+        for group in groups:
+            if self._merge_similar and group.merged:
+                self._render_merged_group(group)
+            else:
+                self._render_plain_group(group)
+
+    def _render_degraded_app(self) -> None:
+        """app_info 不可用时的降级渲染：单一"全部"分组。"""
+        visible = [e for e in self._entries
+                   if self._entry_or_descendant_matches(e)]
+        root_id = self.tree.insert(
+            "", "end",
+            text=f"\U0001F4E6 全部 ({len(visible)})",  # 📦
+            values=("", ""), open=True,
+        )
+        for entry in visible:
+            self._insert_entry(root_id, entry)
+
+    def _render_plain_group(self, group) -> None:
+        """按应用分组渲染（未合并）：根节点=应用名+计数，下挂 entries。"""
+        visible = [e for e in group.entries
+                   if self._entry_or_descendant_matches(e)]
+        if not visible:
+            return
+        root_id = self.tree.insert(
+            "", "end",
+            text=f"\U0001F4E6 {group.app_name} ({len(group.entries)})",  # 📦
+            values=("", ""), open=True,
+        )
+        for entry in visible:
+            self._insert_entry(root_id, entry)
+
+    def _render_merged_group(self, group) -> None:
+        """按应用分组渲染（合并相似项）：MergedItem 作为子节点。"""
+        if not group.merged:
+            # 无合并项 -> 降级为普通渲染
+            self._render_plain_group(group)
+            return
+        root_id = self.tree.insert(
+            "", "end",
+            text=f"\U0001F4E6 {group.app_name} ({len(group.merged)}组)",  # 📦
+            values=("", ""), open=True,
+        )
+        for merged in group.merged:
+            # 过滤隐藏成员
+            visible_members = [m for m in merged.members
+                               if not self._is_hidden(m)]
+            if not visible_members:
+                continue
+            rep = merged.representative
+            count = len(merged.members)
+            targets_str = ", ".join(merged.targets) if merged.targets else ""
+            text = f"{KIND_ICON.get(rep.kind, '•')} {rep.display_name or rep.name}"
+            if count > 1:
+                text += f" ({count}项"
+                if targets_str:
+                    text += f", {targets_str}"
+                text += ")"
+            elif targets_str:
+                text += f" ({targets_str})"
+            tags = ("blocked",) if rep.blocked else ()
+            node_id = self.tree.insert(
+                root_id, "end",
+                text=text,
+                values=(self._format_badge(rep),
+                        _truncate(rep.command or "", 50)),
+                open=True, tags=tags,
+            )
+            # MergedItem 节点登记代表项，点击可在详情面板查看
+            self._id_to_entry[node_id] = rep
+            # 展开成员作为子节点
+            for member in merged.members:
+                if self._is_hidden(member):
+                    continue
+                self._insert_entry(node_id, member, recurse=False)
+
     # ── 节点插入（递归 children）─────────────────────────────
     def _insert_entry(self, parent_id: str, entry: MenuEntry,
                       recurse: bool = True) -> str:
         label = self._format_label(entry)
         summary = _truncate(entry.command or "", 50)
         badge = self._format_badge(entry)
+        tags = ("blocked",) if entry.blocked else ()
         node_id = self.tree.insert(
             parent_id, "end",
             text=label, values=(badge, summary),
-            open=True,
+            open=True, tags=tags,
         )
         self._id_to_entry[node_id] = entry
         if not recurse:
@@ -260,15 +408,27 @@ class TreeView(ttk.Frame):
         return f"{icon} {name}"
 
     def _format_badge(self, entry: MenuEntry) -> str:
+        """作用域徽章：用户 / 系统 / 系统/只读（依据 elevation.can_edit）。"""
         if entry.scope is Scope.USER:
             return BADGE_USER
-        if not entry.editable:
+        # 系统级：能否编辑取决于是否提权（elevation.can_edit）
+        if not elevation.can_edit(entry):
             return f"{BADGE_SYSTEM}/{BADGE_READONLY}"
         return BADGE_SYSTEM
 
     # ── 过滤 ─────────────────────────────────────────────────
+    def _is_hidden(self, entry: MenuEntry) -> bool:
+        """是否被显示选项隐藏（隐藏已屏蔽项 / 隐藏系统项）。"""
+        if self._hide_blocked and entry.blocked:
+            return True
+        if self._hide_system and entry.scope is Scope.SYSTEM:
+            return True
+        return False
+
     def _matches_leaf(self, entry: MenuEntry) -> bool:
-        """叶子匹配：按 显示名/命令/key_path/CLSID 实时过滤。"""
+        """叶子匹配：未被显示选项隐藏 且 命中搜索过滤。"""
+        if self._is_hidden(entry):
+            return False
         if not self._filter:
             return True
         q = self._filter.lower()
@@ -282,7 +442,12 @@ class TreeView(ttk.Frame):
         return any(q in h.lower() for h in haystacks)
 
     def _entry_or_descendant_matches(self, entry: MenuEntry) -> bool:
-        """非 flat 模式下：自身或任一后代命中过滤则保留该分支。"""
+        """非 flat 模式下：自身或任一后代未被隐藏且命中过滤则保留该分支。
+
+        被显示选项隐藏的条目整棵子树不显示。
+        """
+        if self._is_hidden(entry):
+            return False
         if self._matches_leaf(entry):
             return True
         for child in entry.children:

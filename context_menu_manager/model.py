@@ -20,6 +20,10 @@ class TargetContext(Enum):
     DRIVE = "drive"                          # 驱动器
     ALLFILESYSTEMOBJECTS = "allfilesystemobjects"
     FILETYPE = "filetype"                    # 配合 file_type_ext，如 ".txt"
+    NEW = "new"                              # 新建菜单 (ShellNew)
+    SENDTO = "sendto"                        # 发送到
+    OPENWITH = "openwith"                    # 打开方式
+    WINX = "winx"                            # WinX 菜单（Win+X）
 
     @property
     def label(self) -> str:
@@ -30,20 +34,24 @@ class TargetContext(Enum):
             TargetContext.DRIVE: "驱动器",
             TargetContext.ALLFILESYSTEMOBJECTS: "所有文件系统对象",
             TargetContext.FILETYPE: "文件类型",
+            TargetContext.NEW: "新建",
+            TargetContext.SENDTO: "发送到",
+            TargetContext.OPENWITH: "打开方式",
+            TargetContext.WINX: "WinX 菜单",
         }[self]
 
 
 class Scope(Enum):
-    """作用域：决定可否编辑。"""
+    """作用域。提权后 SYSTEM 也可编辑（见 elevation.can_edit）。"""
 
-    USER = "user"      # HKCU\Software\Classes，可编辑
-    SYSTEM = "system"  # HKCR/HKLM 合并视图，只读
+    USER = "user"      # HKCU\Software\Classes
+    SYSTEM = "system"  # HKLM/HKCR，需管理员
 
     @property
     def label(self) -> str:
         return {
             Scope.USER: "用户级（可编辑）",
-            Scope.SYSTEM: "系统级（只读）",
+            Scope.SYSTEM: "系统级",
         }[self]
 
 
@@ -51,7 +59,7 @@ class EntryKind(Enum):
     """菜单项类型。"""
 
     COMMAND = "command"    # 静态命令 shell\<名>\command
-    SHELLEX = "shellex"    # Shell 扩展 shellex\ContextMenuHandlers（CLSID，只读）
+    SHELLEX = "shellex"    # Shell 扩展 shellex\ContextMenuHandlers（CLSID）
     CASCADE = "cascade"    # 级联子菜单（含子命令）
 
     @property
@@ -83,12 +91,16 @@ class MenuEntry:
     extended: bool = False              # 仅 Shift+右键显示
     clsid: str | None = None            # SHELLEX 用
     children: list["MenuEntry"] = field(default_factory=list)
-    blocked: bool = False               # 已禁用（注册表存在 LegacyDisable 值，仅展示）
+    blocked: bool = False               # 已禁用（存在 LegacyDisable 或在 Blocked 键中）
 
     @property
     def editable(self) -> bool:
-        """是否可在本工具中编辑：用户级且非 Shell 扩展。"""
-        return self.scope is Scope.USER and self.kind is not EntryKind.SHELLEX
+        """类型上是否可编辑（非 Shell 扩展）。
+
+        作用域与提权判定见 ``elevation.can_edit``；UI 启用/禁用编辑按钮
+        应使用 ``elevation.can_edit(entry)`` 而非本属性。
+        """
+        return self.kind is not EntryKind.SHELLEX
 
     def to_dict(self) -> dict[str, Any]:
         return {

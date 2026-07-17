@@ -1,8 +1,8 @@
 """右键上下文菜单管理器 - 入口。
 
 用法：
-    python main.py             # 启动图形界面
-    python main.py --selftest  # 烟雾测试：构造主窗口、遍历四种分类、销毁退出
+    python main.py             # 启动图形界面（非 selftest 时自动提权）
+    python main.py --selftest  # 烟雾测试：构造主窗口、遍历五种分类、销毁退出
 
 设计参考：docs/superpowers/specs/2026-07-17-context-menu-manager-design.md
 """
@@ -26,9 +26,9 @@ def _apply_theme(root: tk.Tk) -> None:
 
 
 def selftest() -> int:
-    """烟雾测试：基于 STUB 数据完整构建界面、遍历四种分类视图、销毁退出。
+    """烟雾测试：基于真实注册表完整构建界面、遍历五种分类视图、销毁退出。
 
-    不进入 mainloop；构造 -> update -> destroy。
+    不进入 mainloop；构造 -> update -> destroy。不提权（保持可无头测试）。
     """
     try:
         from context_menu_manager.ui.main_window import MainWindow
@@ -51,8 +51,8 @@ def selftest() -> int:
         win.refresh()
         root.update()
 
-        # 遍历四种分类视图，验证都能正确渲染（每个模式至少有一个节点）
-        for mode in ("target", "scope", "kind", "flat"):
+        # 遍历五种分类视图，验证都能正确渲染（每个模式至少有一个节点）
+        for mode in ("target", "scope", "kind", "flat", "app"):
             win.set_classification(mode)
             root.update_idletasks()
             root.update()
@@ -83,6 +83,23 @@ def selftest() -> int:
         win.tree_view.set_search_filter("VSCode")
         root.update()
         win.tree_view.set_search_filter("")
+        root.update()
+
+        # 测试显示选项切换（隐藏已屏蔽/隐藏系统）
+        win.tree_view.set_hide_blocked(True)
+        root.update()
+        win.tree_view.set_hide_blocked(False)
+        root.update()
+        win.tree_view.set_hide_system(True)
+        root.update()
+        win.tree_view.set_hide_system(False)
+        root.update()
+
+        # 测试按应用分类 + 合并相似项
+        win.set_classification("app")
+        win.tree_view.set_merge_similar(True)
+        root.update()
+        win.tree_view.set_merge_similar(False)
         root.update()
 
         # 验证 backend 模块降级提示生效
@@ -150,8 +167,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # --selftest 模式不提权（保持可无头测试）
     if args.selftest:
         return selftest()
+
+    # 自动提权：非 selftest 模式下，若未提权则请求 UAC 重启自身
+    from context_menu_manager import elevation
+    if not elevation.is_admin():
+        if elevation.request_elevation():
+            # UAC 已通过，提权进程已启动；退出当前非提权进程
+            # request_elevation 已透传 sys.argv（含可能的参数）
+            sys.exit(0)
+        # 用户拒绝 UAC 或提权失败 -> 以非提权模式继续运行
+        # 状态栏会在 MainWindow 中显示"用户模式（仅用户级可编辑）"
 
     from context_menu_manager.ui.main_window import MainWindow
     root = tk.Tk()

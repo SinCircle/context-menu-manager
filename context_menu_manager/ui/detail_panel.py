@@ -2,10 +2,11 @@
 
 只读字段：目标场景 / 作用域 / 类型 / 文件类型扩展 / 注册表路径 /
          键名 / CLSID / 位置 / Extended / 屏蔽状态。
-可编辑字段（当 entry.editable=True 时启用）：
+可编辑字段（当 elevation.can_edit(entry)=True 时启用）：
          显示名 / 命令 / 图标 / Position / Extended。
-命令旁提供"占位符帮助"（弹窗显示 placeholders.describe()）与
-实时校验（placeholders.validate_command()）。
+命令旁显示 command_info.parse_command 解析出的描述（如"用 VSCode 打开"），
+command_info 为 stub 或解析失败时不显示描述（显示"-"）。
+命令校验用 placeholders.validate_command()。
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
+from .. import elevation
 from ..model import EntryKind, MenuEntry, Scope
 
 # Position 可选值
@@ -26,12 +28,14 @@ class DetailPanel(ttk.Frame):
         self,
         master: tk.Misc,
         placeholders=None,
+        command_info=None,
         on_save: Optional[Callable[[MenuEntry], None]] = None,
         *args,
         **kwargs,
     ) -> None:
         super().__init__(master, *args, **kwargs)
         self._placeholders = placeholders
+        self._command_info = command_info
         self._on_save = on_save
         self._entry: Optional[MenuEntry] = None
         self._build_ui()
@@ -85,21 +89,49 @@ class DetailPanel(ttk.Frame):
         )
         row += 1
 
-        # 可编辑字段：显示名 / 命令 / 图标
-        for key, label in [
-            ("display_name", "显示名"),
-            ("command", "命令"),
-            ("icon", "图标"),
-        ]:
-            ttk.Label(form, text=label + "：").grid(
-                row=row, column=0, sticky="ne", padx=(0, 6), pady=2
-            )
-            var = tk.StringVar()
-            entry = ttk.Entry(form, textvariable=var, width=60)
-            entry.grid(row=row, column=1, sticky="we", pady=2)
-            self._editable_vars[key] = var
-            self._editable_widgets[key] = entry
-            row += 1
+        # 可编辑字段：显示名
+        ttk.Label(form, text="显示名：").grid(
+            row=row, column=0, sticky="ne", padx=(0, 6), pady=2
+        )
+        var = tk.StringVar()
+        entry = ttk.Entry(form, textvariable=var, width=60)
+        entry.grid(row=row, column=1, sticky="we", pady=2)
+        self._editable_vars["display_name"] = var
+        self._editable_widgets["display_name"] = entry
+        row += 1
+
+        # 可编辑字段：命令
+        ttk.Label(form, text="命令：").grid(
+            row=row, column=0, sticky="ne", padx=(0, 6), pady=2
+        )
+        var = tk.StringVar()
+        entry = ttk.Entry(form, textvariable=var, width=60)
+        entry.grid(row=row, column=1, sticky="we", pady=2)
+        self._editable_vars["command"] = var
+        self._editable_widgets["command"] = entry
+        row += 1
+
+        # 命令描述（只读，由 command_info.parse_command 解析）
+        ttk.Label(form, text="命令描述：").grid(
+            row=row, column=0, sticky="ne", padx=(0, 6), pady=2
+        )
+        self._cmd_desc_var = tk.StringVar(value="-")
+        ttk.Label(
+            form, textvariable=self._cmd_desc_var,
+            wraplength=420, justify="left", foreground="#555",
+        ).grid(row=row, column=1, sticky="w", pady=2)
+        row += 1
+
+        # 可编辑字段：图标
+        ttk.Label(form, text="图标：").grid(
+            row=row, column=0, sticky="ne", padx=(0, 6), pady=2
+        )
+        var = tk.StringVar()
+        entry = ttk.Entry(form, textvariable=var, width=60)
+        entry.grid(row=row, column=1, sticky="we", pady=2)
+        self._editable_vars["icon"] = var
+        self._editable_widgets["icon"] = entry
+        row += 1
 
         # Position（可编辑 Combobox）
         ttk.Label(form, text="Position：").grid(
@@ -160,6 +192,7 @@ class DetailPanel(ttk.Frame):
             v.set("-")
         for v in self._editable_vars.values():
             v.set(POSITIONS[0] if v is self._editable_vars.get("position") else "")
+        self._cmd_desc_var.set("-")
         self._extended_var.set(False)
         self._set_editable(False)
         self._validate_var.set("")
@@ -179,7 +212,11 @@ class DetailPanel(ttk.Frame):
             self._clear()
             return
         self._entry = entry
-        self._title_var.set(f"{entry.display_name}  ({entry.kind.label})")
+        # 标题：屏蔽项加标记
+        title = f"{entry.display_name}  ({entry.kind.label})"
+        if entry.blocked:
+            title = f"[屏蔽] {title}"
+        self._title_var.set(title)
         self._readonly_vars["target"].set(entry.target.label)
         self._readonly_vars["scope"].set(entry.scope.label)
         self._readonly_vars["kind"].set(entry.kind.label)
@@ -189,7 +226,8 @@ class DetailPanel(ttk.Frame):
         self._readonly_vars["clsid"].set(entry.clsid or "-")
         self._readonly_vars["position"].set(entry.position or "-")
         self._readonly_vars["extended"].set("是" if entry.extended else "否")
-        self._readonly_vars["blocked"].set("是" if entry.blocked else "否")
+        self._readonly_vars["blocked"].set(
+            "已屏蔽" if entry.blocked else "正常")
 
         self._editable_vars["display_name"].set(entry.display_name or "")
         self._editable_vars["command"].set(entry.command or "")
@@ -199,15 +237,33 @@ class DetailPanel(ttk.Frame):
         )
         self._extended_var.set(bool(entry.extended))
 
-        self._set_editable(entry.editable)
+        # 命令描述（由 command_info 解析）
+        self._update_command_description(entry.command)
+
+        # 可编辑性：用 elevation.can_edit 统一判定
+        self._set_editable(elevation.can_edit(entry))
         self._validate_command(self._editable_vars["command"].get())
+
+    def _update_command_description(self, command: str | None) -> None:
+        """调 command_info.parse_command 获取描述；stub 或失败时显示"-"。"""
+        if self._command_info is None:
+            self._cmd_desc_var.set("-")
+            return
+        try:
+            info = self._command_info.parse_command(command)
+        except Exception:
+            info = None
+        if info is not None and getattr(info, "description", None):
+            self._cmd_desc_var.set(info.description)
+        else:
+            self._cmd_desc_var.set("-")
 
     # ── 校验 ─────────────────────────────────────────────────
     def _on_command_change(self, *args) -> None:
         self._validate_command(self._editable_vars["command"].get())
 
     def _validate_command(self, command: str) -> None:
-        if not self._entry or not self._entry.editable:
+        if not self._entry or not elevation.can_edit(self._entry):
             self._validate_var.set("")
             return
         if self._placeholders is None:
@@ -240,7 +296,7 @@ class DetailPanel(ttk.Frame):
 
     # ── 保存 ─────────────────────────────────────────────────
     def _on_save_click(self) -> None:
-        if self._entry is None or not self._entry.editable:
+        if self._entry is None or not elevation.can_edit(self._entry):
             return
         e = self._entry
         pos_val = self._editable_vars["position"].get()

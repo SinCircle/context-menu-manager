@@ -1,3 +1,7 @@
+# Reference project (extracted zip, not part of our code)
+reference/
+ContextMenuManager-master.zip
+
 # Python
 __pycache__/
 *.py[cod]
