@@ -33,6 +33,16 @@ def can_block(entry: MenuEntry) -> bool:
     return entry.scope is Scope.USER or is_admin()
 
 
+def _windowless_python() -> str:
+    """返回无控制台窗口的 Python 可执行文件路径。
+
+    优先同目录的 pythonw.exe；不存在则回退 sys.executable。
+    用于提权重启时避免弹出额外的黑色控制台窗口。
+    """
+    candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return candidate if os.path.exists(candidate) else sys.executable
+
+
 def request_elevation() -> bool:
     """以管理员身份重启自身（触发 UAC）。
 
@@ -40,14 +50,21 @@ def request_elevation() -> bool:
     - 已是管理员 -> False（无需提权）
     - 成功触发提权重启 -> True（调用方应随后 ``sys.exit``）
     - 用户拒绝 UAC 或失败 -> False
+
+    用 pythonw.exe 重启以避免额外的控制台黑窗口；脚本路径转为绝对路径、
+    工作目录设为脚本所在目录，避免提权后默认落在 System32 找不到脚本。
     """
     if is_admin():
         return False
-    params = " ".join(f'"{a}"' for a in sys.argv)
+    argv = list(sys.argv)
+    if argv:
+        argv[0] = os.path.abspath(argv[0])
+    params = " ".join(f'"{a}"' for a in argv)
+    work_dir = os.path.dirname(argv[0]) if argv else os.getcwd()
     try:
         # SW_SHOWNORMAL = 1
         rc = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, params, os.getcwd(), 1
+            None, "runas", _windowless_python(), params, work_dir, 1
         )
     except Exception:
         return False

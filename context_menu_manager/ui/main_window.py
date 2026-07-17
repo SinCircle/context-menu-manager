@@ -133,6 +133,7 @@ class MainWindow(ttk.Frame):
         self.tree_view = TreeView(
             paned, on_select=self._on_tree_select,
             app_info=self._app_info,
+            command_info=self._command_info,
         )
         paned.add(self.tree_view, weight=2)
 

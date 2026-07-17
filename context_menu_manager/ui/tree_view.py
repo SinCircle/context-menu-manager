@@ -80,12 +80,15 @@ class TreeView(ttk.Frame):
         master: tk.Misc,
         on_select: Optional[Callable[[Optional[MenuEntry]], None]] = None,
         app_info=None,
+        command_info=None,
         *args,
         **kwargs,
     ) -> None:
         super().__init__(master, *args, **kwargs)
         self._on_select = on_select
         self._app_info = app_info
+        self._command_info = command_info
+        self._desc_cache: dict[str, str] = {}
         self._entries: list[MenuEntry] = []
         self._mode: str = "target"
         self._filter: str = ""
@@ -103,16 +106,20 @@ class TreeView(ttk.Frame):
 
         self.tree = ttk.Treeview(
             container,
-            columns=("badge", "summary"),
+            columns=("badge", "desc", "summary"),
             show="tree headings",
             selectmode="browse",
         )
         self.tree.heading("#0", text="项目")
         self.tree.heading("badge", text="作用域")
+        self.tree.heading("desc", text="描述")
         self.tree.heading("summary", text="命令摘要")
-        self.tree.column("#0", width=280, anchor="w")
-        self.tree.column("badge", width=80, anchor="center")
-        self.tree.column("summary", width=220, anchor="w")
+        # stretch=False：列宽固定，内容超出可视区时横向滚动条生效；
+        # 列首可拖拽调整宽度以查看长命令。
+        self.tree.column("#0", width=240, anchor="w", stretch=False)
+        self.tree.column("badge", width=60, anchor="center", stretch=False)
+        self.tree.column("desc", width=190, anchor="w", stretch=False)
+        self.tree.column("summary", width=240, anchor="w", stretch=False)
 
         # 屏蔽项灰色文字标签
         self.tree.tag_configure("blocked", foreground="#888888")
@@ -234,7 +241,7 @@ class TreeView(ttk.Frame):
             root_id = self.tree.insert(
                 "", "end",
                 text=f"\U0001F4C1 {t.label}",  # 📁
-                values=("", ""),
+                values=("", "", ""),
                 open=False,
             )
             for entry in visible:
@@ -250,7 +257,7 @@ class TreeView(ttk.Frame):
             root_id = self.tree.insert(
                 "", "end",
                 text=f"\U0001F4C4 文件类型 {ext}",  # 📄
-                values=("", ""),
+                values=("", "", ""),
                 open=False,
             )
             for entry in visible:
@@ -261,12 +268,12 @@ class TreeView(ttk.Frame):
         user_root = self.tree.insert(
             "", "end",
             text=f"\U0001F464 {Scope.USER.label}",  # 👤
-            values=("", ""), open=False,
+            values=("", "", ""), open=False,
         )
         sys_root = self.tree.insert(
             "", "end",
             text=f"\U0001F512 {Scope.SYSTEM.label}",  # 🔒
-            values=("", ""), open=False,
+            values=("", "", ""), open=False,
         )
         for entry in self._entries:
             if not self._entry_or_descendant_matches(entry):
@@ -285,7 +292,7 @@ class TreeView(ttk.Frame):
             root_id = self.tree.insert(
                 "", "end",
                 text=f"{KIND_ICON.get(k, '•')} {k.label}",
-                values=("", ""), open=False,
+                values=("", "", ""), open=False,
             )
             for entry in matching:
                 self._insert_entry(root_id, entry)
@@ -328,7 +335,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 全部 ({len(visible)})",  # 📦
-            values=("", ""), open=False,
+            values=("", "", ""), open=False,
         )
         for entry in visible:
             self._insert_entry(root_id, entry)
@@ -342,7 +349,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 {group.app_name} ({len(group.entries)})",  # 📦
-            values=("", ""), open=False,
+            values=("", "", ""), open=False,
         )
         for entry in visible:
             self._insert_entry(root_id, entry)
@@ -356,7 +363,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 {group.app_name} ({len(group.merged)}组)",  # 📦
-            values=("", ""), open=False,
+            values=("", "", ""), open=False,
         )
         for merged in group.merged:
             # 过滤隐藏成员
@@ -380,6 +387,7 @@ class TreeView(ttk.Frame):
                 root_id, "end",
                 text=text,
                 values=(self._format_badge(rep),
+                        self._describe(rep),
                         _truncate(rep.command or "", 50)),
                 open=False, tags=tags,
             )
@@ -397,10 +405,11 @@ class TreeView(ttk.Frame):
         label = self._format_label(entry)
         summary = _truncate(entry.command or "", 50)
         badge = self._format_badge(entry)
+        desc = self._describe(entry)
         tags = ("blocked",) if entry.blocked else ()
         node_id = self.tree.insert(
             parent_id, "end",
-            text=label, values=(badge, summary),
+            text=label, values=(badge, desc, summary),
             open=False, tags=tags,
         )
         self._id_to_entry[node_id] = entry
@@ -411,6 +420,23 @@ class TreeView(ttk.Frame):
             if self._entry_or_descendant_matches(child):
                 self._insert_entry(node_id, child)
         return node_id
+
+    def _describe(self, entry: MenuEntry) -> str:
+        """返回命令描述（来自 command_info）；按命令串缓存避免重建时重复解析。"""
+        ci = self._command_info
+        if ci is None or not entry.command:
+            return ""
+        cmd = entry.command
+        cached = self._desc_cache.get(cmd)
+        if cached is not None:
+            return cached
+        try:
+            info = ci.parse_command(cmd)
+            desc = info.description if info else ""
+        except Exception:
+            desc = ""
+        self._desc_cache[cmd] = desc
+        return desc
 
     def _format_label(self, entry: MenuEntry) -> str:
         icon = KIND_ICON.get(entry.kind, "•")
