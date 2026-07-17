@@ -198,6 +198,20 @@ class TreeView(ttk.Frame):
             self._build_by_app()
         else:
             self._build_flat()
+        # 默认全部折叠；仅当有搜索过滤时自动展开含匹配项的分支以便查看结果
+        if self._filter:
+            self._expand_all_with_children()
+
+    def _expand_all_with_children(self) -> None:
+        """展开所有含子节点的节点（搜索时显露匹配项）。"""
+        def walk(iid: str) -> None:
+            children = self.tree.get_children(iid)
+            if children:
+                self.tree.item(iid, open=True)
+                for c in children:
+                    walk(c)
+        for iid in self.tree.get_children(""):
+            walk(iid)
 
     # 1. 按目标位置 ─────────────────────────────────────────────
     def _build_by_target(self) -> None:
@@ -221,7 +235,7 @@ class TreeView(ttk.Frame):
                 "", "end",
                 text=f"\U0001F4C1 {t.label}",  # 📁
                 values=("", ""),
-                open=True,
+                open=False,
             )
             for entry in visible:
                 self._insert_entry(root_id, entry)
@@ -237,7 +251,7 @@ class TreeView(ttk.Frame):
                 "", "end",
                 text=f"\U0001F4C4 文件类型 {ext}",  # 📄
                 values=("", ""),
-                open=True,
+                open=False,
             )
             for entry in visible:
                 self._insert_entry(root_id, entry)
@@ -247,12 +261,12 @@ class TreeView(ttk.Frame):
         user_root = self.tree.insert(
             "", "end",
             text=f"\U0001F464 {Scope.USER.label}",  # 👤
-            values=("", ""), open=True,
+            values=("", ""), open=False,
         )
         sys_root = self.tree.insert(
             "", "end",
             text=f"\U0001F512 {Scope.SYSTEM.label}",  # 🔒
-            values=("", ""), open=True,
+            values=("", ""), open=False,
         )
         for entry in self._entries:
             if not self._entry_or_descendant_matches(entry):
@@ -271,7 +285,7 @@ class TreeView(ttk.Frame):
             root_id = self.tree.insert(
                 "", "end",
                 text=f"{KIND_ICON.get(k, '•')} {k.label}",
-                values=("", ""), open=True,
+                values=("", ""), open=False,
             )
             for entry in matching:
                 self._insert_entry(root_id, entry)
@@ -314,7 +328,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 全部 ({len(visible)})",  # 📦
-            values=("", ""), open=True,
+            values=("", ""), open=False,
         )
         for entry in visible:
             self._insert_entry(root_id, entry)
@@ -328,7 +342,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 {group.app_name} ({len(group.entries)})",  # 📦
-            values=("", ""), open=True,
+            values=("", ""), open=False,
         )
         for entry in visible:
             self._insert_entry(root_id, entry)
@@ -342,7 +356,7 @@ class TreeView(ttk.Frame):
         root_id = self.tree.insert(
             "", "end",
             text=f"\U0001F4E6 {group.app_name} ({len(group.merged)}组)",  # 📦
-            values=("", ""), open=True,
+            values=("", ""), open=False,
         )
         for merged in group.merged:
             # 过滤隐藏成员
@@ -367,7 +381,7 @@ class TreeView(ttk.Frame):
                 text=text,
                 values=(self._format_badge(rep),
                         _truncate(rep.command or "", 50)),
-                open=True, tags=tags,
+                open=False, tags=tags,
             )
             # MergedItem 节点登记代表项，点击可在详情面板查看
             self._id_to_entry[node_id] = rep
@@ -387,7 +401,7 @@ class TreeView(ttk.Frame):
         node_id = self.tree.insert(
             parent_id, "end",
             text=label, values=(badge, summary),
-            open=True, tags=tags,
+            open=False, tags=tags,
         )
         self._id_to_entry[node_id] = entry
         if not recurse:
