@@ -180,3 +180,12 @@ def delete_backup(name: str) -> None
 - **B（前端）**：`ui/` 包 + `main.py`，依据 `model.py` 契约与 `registry.py` 接口构建界面。
 
 共享契约 `model.py` 与 `registry.py` 接口先行确定，使两者可并行。
+
+## 14. 实现备忘与已知限制（集成后补充）
+
+- **`blocked` 判定**：实现中用注册表 `LegacyDisable` 值的存在性判定（真实 Windows 禁用机制），而非键名前缀。`model.py` 注释已同步。
+- **级联子菜单编辑**：`update_entry` 对级联项是增量式--会写入/更新 `children` 列表中的子项，但**不会删除**列表中未出现的旧子项。移除子项请改为在树中选中该子项节点后点"删除"（级联子项是可单独选中的可编辑节点）。此限制是非破坏性的（不会误删），故暂不引入按名匹配删除以免误删。
+- **Shell 扩展显示名**：SHELLEX 的 `display_name` 为原始键名，不解析 CLSID 友好名（需 COM 查询，超范围）。展示以键名 + CLSID 为准。
+- **备份范围**：`backup_all` 导出 HKCU 分支（无需管理员）；HKCR 分支导出可能需管理员，遇权限问题抛 `RegistryError`。
+- **command 值类型**：写为 `REG_EXPAND_SZ`，`%SystemRoot%` 等环境变量会被系统展开，`%1`/`%V` 等 Shell 占位符不受影响。
+- **测试**：46 个单元测试通过（标准库 `unittest`，HKCU 测试子键真实 CRUD 后清理）；`python main.py --selftest` 对真实注册表完整构建四种分类视图（1113/796/797/794 节点）。
