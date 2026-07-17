@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Backups generated at runtime
+backups/
+*.reg
+
+# Build
+build/
+dist/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
