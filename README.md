@@ -41,7 +41,7 @@ python main.py
 
 ## 已知限制
 
-见 `docs/superpowers/specs/2026-07-17-context-menu-manager-design.md`。要点：
+要点：
 - 编辑级联菜单时移除子项不会自动同步到注册表；请在树中选中子项节点单独删除。
 - Shell 扩展显示名为原始键名（不解析 CLSID 友好名）。
 - 新建/打开方式的显示名多为 `@dll,-NNN` 资源字符串（未展开）。

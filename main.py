@@ -3,8 +3,6 @@
 用法：
     python main.py             # 启动图形界面（非 selftest 时自动提权）
     python main.py --selftest  # 烟雾测试：构造主窗口、遍历五种分类、销毁退出
-
-设计参考：docs/superpowers/specs/2026-07-17-context-menu-manager-design.md
 """
 from __future__ import annotations
 
